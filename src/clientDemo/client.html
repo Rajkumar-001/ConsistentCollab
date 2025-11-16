@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ConsistentCollab - Demo Client</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+    }
+    .container {
+      background: white;
+      border-radius: 12px;
+      padding: 30px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+    }
+    h1 {
+      margin: 0 0 10px 0;
+      color: #333;
+      font-size: 28px;
+    }
+    .info {
+      background: #f0f4ff;
+      border-left: 4px solid #667eea;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 4px;
+    }
+    .info p {
+      margin: 5px 0;
+      font-size: 14px;
+      color: #555;
+    }
+    .info strong {
+      color: #333;
+    }
+    .status {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+      margin-left: 10px;
+    }
+    .status.connected {
+      background: #d4edda;
+      color: #155724;
+    }
+    .status.disconnected {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    .status.connecting {
+      background: #fff3cd;
+      color: #856404;
+    }
+    label {
+      display: block;
+      margin: 20px 0 8px 0;
+      font-weight: 600;
+      color: #333;
+    }
+    textarea {
+      width: 100%;
+      min-height: 200px;
+      padding: 15px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 14px;
+      resize: vertical;
+      box-sizing: border-box;
+      transition: border-color 0.3s;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    .controls {
+      margin-top: 15px;
+      display: flex;
+      gap: 10px;
+    }
+    button {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    button.primary {
+      background: #667eea;
+      color: white;
+    }
+    button.primary:hover {
+      background: #5568d3;
+    }
+    button.secondary {
+      background: #e0e0e0;
+      color: #333;
+    }
+    button.secondary:hover {
+      background: #d0d0d0;
+    }
+    .updates-log {
+      margin-top: 30px;
+      padding: 15px;
+      background: #f9f9f9;
+      border-radius: 8px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+    }
+    .updates-log h3 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: #333;
+    }
+    .log-entry {
+      padding: 5px 0;
+      border-bottom: 1px solid #eee;
+      color: #666;
+    }
+    .log-entry:last-child {
+      border-bottom: none;
+    }
+    .log-entry .time {
+      color: #999;
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ConsistentCollab Demo</h1>
+    
+    <div class="info">
+      <p><strong>Room:</strong> <span id="room"></span></p>
+      <p><strong>Client ID:</strong> <span id="clientId"></span></p>
+      <p><strong>Instance:</strong> <span id="instance">—</span></p>
+      <p>
+        <strong>Status:</strong>
+        <span class="status connecting" id="status">Connecting...</span>
+      </p>
+    </div>
+
+    <label for="doc">Shared Document (edit to collaborate)</label>
+    <textarea id="doc" placeholder="Start typing to see real-time collaboration..."></textarea>
+
+    <div class="controls">
+      <button class="primary" id="clearBtn">Clear Document</button>
+      <button class="secondary" id="reconnectBtn">Reconnect</button>
+    </div>
+
+    <div class="updates-log">
+      <h3>Activity Log</h3>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/yjs@13.6.10/dist/yjs.js"></script>
+  <script>
+    // Parse URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const room = urlParams.get('room') || 'default';
+    const port = urlParams.get('port') || window.location.port || '1234';
+    
+    // Generate or retrieve client ID
+    let clientId = localStorage.getItem('clientId');
+    if (!clientId) {
+      clientId = crypto.randomUUID();
+      localStorage.setItem('clientId', clientId);
+    }
+
+    // Display info
+    document.getElementById('room').textContent = room;
+    document.getElementById('clientId').textContent = clientId;
+
+    // Initialize Yjs document
+    let ydoc = new Y.Doc();
+    let ytext = ydoc.getText('shared');
+    let ws = null;
+    let suppressInput = false;
+
+    // UI elements
+    const statusEl = document.getElementById('status');
+    const instanceEl = document.getElementById('instance');
+    const textarea = document.getElementById('doc');
+    const logEl = document.getElementById('log');
+    const clearBtn = document.getElementById('clearBtn');
+    const reconnectBtn = document.getElementById('reconnectBtn');
+
+    // Logger
+    function log(message) {
+      const time = new Date().toLocaleTimeString();
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.innerHTML = `<span class="time">${time}</span>${message}`;
+      logEl.insertBefore(entry, logEl.firstChild);
+      
+      // Keep only last 20 entries
+      while (logEl.children.length > 20) {
+        logEl.removeChild(logEl.lastChild);
+      }
+    }
+
+    // Update status
+    function setStatus(status, text) {
+      statusEl.className = `status ${status}`;
+      statusEl.textContent = text;
+    }
+
+    // Connect to WebSocket
+    function connect() {
+      const wsUrl = `ws://${window.location.hostname}:${port}/?room=${encodeURIComponent(room)}&clientId=${encodeURIComponent(clientId)}`;
+      
+      log(`Connecting to ${wsUrl}`);
+      setStatus('connecting', 'Connecting...');
+
+      ws = new WebSocket(wsUrl);
+
+      ws.addEventListener('open', () => {
+        log('Connected to server');
+        setStatus('connected', 'Connected');
+      });
+
+      ws.addEventListener('message', (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === 'sync') {
+            // Decode base64 update
+            const updateArray = Uint8Array.from(atob(msg.update), c => c.charCodeAt(0));
+            
+            // Apply update to local document
+            suppressInput = true;
+            Y.applyUpdate(ydoc, updateArray);
+            suppressInput = false;
+
+            if (msg.action === 'snapshot') {
+              log('Received initial snapshot');
+            } else if (msg.action === 'update') {
+              const origin = msg.originInstance || 'unknown';
+              instanceEl.textContent = origin;
+              log(`Received update from instance: ${origin}`);
+            }
+          }
+        } catch (error) {
+          console.error('Error processing message:', error);
+          log(`Error: ${error.message}`);
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        log('Disconnected from server');
+        setStatus('disconnected', 'Disconnected');
+      });
+
+      ws.addEventListener('error', (error) => {
+        console.error('WebSocket error:', error);
+        log('Connection error');
+        setStatus('disconnected', 'Error');
+      });
+    }
+
+    // Observe Yjs changes and update textarea
+    ytext.observe(() => {
+      if (!suppressInput) {
+        textarea.value = ytext.toString();
+      }
+    });
+
+    // Handle textarea input
+    textarea.addEventListener('input', () => {
+      if (suppressInput || !ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      // Update Yjs document
+      ydoc.transact(() => {
+        ytext.delete(0, ytext.length);
+        ytext.insert(0, textarea.value);
+      });
+
+      // Encode and send update
+      const update = Y.encodeStateAsUpdate(ydoc);
+      const updateBase64 = btoa(String.fromCharCode(...new Uint8Array(update)));
+      
+      const message = {
+        type: 'update',
+        room: room,
+        clientId: clientId,
+        update: updateBase64
+      };
+
+      ws.send(JSON.stringify(message));
+      log('Sent update to server');
+    });
+
+    // Clear document button
+    clearBtn.addEventListener('click', () => {
+      if (confirm('Clear the entire document?')) {
+        textarea.value = '';
+        ydoc.transact(() => {
+          ytext.delete(0, ytext.length);
+        });
+        
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const update = Y.encodeStateAsUpdate(ydoc);
+          const updateBase64 = btoa(String.fromCharCode(...new Uint8Array(update)));
+          ws.send(JSON.stringify({
+            type: 'update',
+            room: room,
+            clientId: clientId,
+            update: updateBase64
+          }));
+        }
+        
+        log('Document cleared');
+      }
+    });
+
+    // Reconnect button
+    reconnectBtn.addEventListener('click', () => {
+      if (ws) {
+        ws.close();
+      }
+      ydoc = new Y.Doc();
+      ytext = ydoc.getText('shared');
+      ytext.observe(() => {
+        if (!suppressInput) {
+          textarea.value = ytext.toString();
+        }
+      });
+      connect();
+    });
+
+    // Initial connection
+    connect();
+  </script>
+</body>
+</html>
