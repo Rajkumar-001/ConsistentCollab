@@ -65,7 +65,7 @@ When two clients update the same field simultaneously, Yjs applies operation-bas
 
 ```bash
 # Clone repository
-git clone <repo-url>
+git clone https://github.com/Rajkumar-001/ConsistentCollab.git
 cd ConsistentCollab
 
 # Start all services (2 instances + Redis)
