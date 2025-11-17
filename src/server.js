@@ -90,7 +90,7 @@ wss.on("connection", async (ws, req) => {
     const snapshot = {
       type: "sync",
       action: "snapshot",
-      update: state.toString("base64"),
+      update: Buffer.from(state).toString("base64"),
     };
     ws.send(JSON.stringify(snapshot));
     messagesSent.inc();

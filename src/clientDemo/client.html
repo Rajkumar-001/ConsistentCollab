@@ -166,12 +166,34 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/yjs@13.6.10/dist/yjs.js"></script>
+  <script type="module">
+    import * as Y from 'https://cdn.jsdelivr.net/npm/yjs@13.6.10/+esm';
+    window.Y = Y;
+    console.log('Yjs loaded:', Y);
+    
+    // Dispatch custom event when Y is ready
+    window.dispatchEvent(new CustomEvent('yjs-ready'));
+  </script>
   <script>
+    // Wait for Yjs to be ready
+    if (typeof window.Y === 'undefined') {
+      window.addEventListener('yjs-ready', initApp);
+    } else {
+      initApp();
+    }
+    
+    function initApp() {
+    console.log('Yjs loaded:', typeof window.Y !== 'undefined', window.Y);
+    
     // Parse URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const room = urlParams.get('room') || 'default';
-    const port = urlParams.get('port') || window.location.port || '1234';
+    const port = urlParams.get('port') || window.location.port;
+    
+    console.log('Room:', room);
+    console.log('Port:', port);
+    console.log('Hostname:', window.location.hostname);
+    console.log('WebSocket URL will be:', `ws://${window.location.hostname}:${port}/?room=${room}&clientId=test`);
     
     // Generate or retrieve client ID
     let clientId = localStorage.getItem('clientId');
@@ -185,10 +207,27 @@
     document.getElementById('clientId').textContent = clientId;
 
     // Initialize Yjs document
-    let ydoc = new Y.Doc();
+    console.log('Creating Yjs document...');
+    let ydoc = new window.Y.Doc();
+    console.log('Yjs document created:', ydoc);
     let ytext = ydoc.getText('shared');
     let ws = null;
     let suppressInput = false;
+    
+    // Set up update handler to capture only changes
+    ydoc.on('update', (update, origin) => {
+      // Only send updates that originated locally (not from remote)
+      if (origin !== 'remote' && ws && ws.readyState === WebSocket.OPEN) {
+        const updateBase64 = btoa(String.fromCharCode(...new Uint8Array(update)));
+        ws.send(JSON.stringify({
+          type: 'update',
+          room: room,
+          clientId: clientId,
+          update: updateBase64
+        }));
+        log('Sent update to server');
+      }
+    });
 
     // UI elements
     const statusEl = document.getElementById('status');
@@ -222,12 +261,15 @@
     function connect() {
       const wsUrl = `ws://${window.location.hostname}:${port}/?room=${encodeURIComponent(room)}&clientId=${encodeURIComponent(clientId)}`;
       
+      console.log('Connecting to WebSocket:', wsUrl);
       log(`Connecting to ${wsUrl}`);
       setStatus('connecting', 'Connecting...');
 
       ws = new WebSocket(wsUrl);
+      console.log('WebSocket object created:', ws);
 
       ws.addEventListener('open', () => {
+        console.log('WebSocket OPEN event fired!');
         log('Connected to server');
         setStatus('connected', 'Connected');
       });
@@ -239,11 +281,12 @@
           if (msg.type === 'sync') {
             // Decode base64 update
             const updateArray = Uint8Array.from(atob(msg.update), c => c.charCodeAt(0));
+            console.log('Applying update, length:', updateArray.length);
             
-            // Apply update to local document
-            suppressInput = true;
-            Y.applyUpdate(ydoc, updateArray);
-            suppressInput = false;
+            // Apply update to local document with 'remote' origin to prevent echo
+            // Don't suppress - we WANT the observe to fire and update the textarea
+            window.Y.applyUpdate(ydoc, updateArray, 'remote');
+            console.log('Update applied, current text:', ytext.toString());
 
             if (msg.action === 'snapshot') {
               log('Received initial snapshot');
@@ -259,13 +302,14 @@
         }
       });
 
-      ws.addEventListener('close', () => {
+      ws.addEventListener('close', (event) => {
+        console.log('WebSocket CLOSE event:', event.code, event.reason);
         log('Disconnected from server');
         setStatus('disconnected', 'Disconnected');
       });
 
       ws.addEventListener('error', (error) => {
-        console.error('WebSocket error:', error);
+        console.error('WebSocket ERROR event:', error);
         log('Connection error');
         setStatus('disconnected', 'Error');
       });
@@ -273,36 +317,27 @@
 
     // Observe Yjs changes and update textarea
     ytext.observe(() => {
+      console.log('Yjs observe fired! suppressInput:', suppressInput, 'text:', ytext.toString());
+      // Only update textarea if change came from remote (not from typing)
       if (!suppressInput) {
         textarea.value = ytext.toString();
+        console.log('Updated textarea to:', textarea.value);
       }
     });
 
     // Handle textarea input
     textarea.addEventListener('input', () => {
-      if (suppressInput || !ws || ws.readyState !== WebSocket.OPEN) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
         return;
       }
 
-      // Update Yjs document
+      // Suppress observe handler while we update from textarea
+      suppressInput = true;
       ydoc.transact(() => {
         ytext.delete(0, ytext.length);
         ytext.insert(0, textarea.value);
       });
-
-      // Encode and send update
-      const update = Y.encodeStateAsUpdate(ydoc);
-      const updateBase64 = btoa(String.fromCharCode(...new Uint8Array(update)));
-      
-      const message = {
-        type: 'update',
-        room: room,
-        clientId: clientId,
-        update: updateBase64
-      };
-
-      ws.send(JSON.stringify(message));
-      log('Sent update to server');
+      suppressInput = false;
     });
 
     // Clear document button
@@ -312,18 +347,7 @@
         ydoc.transact(() => {
           ytext.delete(0, ytext.length);
         });
-        
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          const update = Y.encodeStateAsUpdate(ydoc);
-          const updateBase64 = btoa(String.fromCharCode(...new Uint8Array(update)));
-          ws.send(JSON.stringify({
-            type: 'update',
-            room: room,
-            clientId: clientId,
-            update: updateBase64
-          }));
-        }
-        
+        // The 'update' event handler will automatically send the update
         log('Document cleared');
       }
     });
@@ -333,8 +357,23 @@
       if (ws) {
         ws.close();
       }
-      ydoc = new Y.Doc();
+      ydoc = new window.Y.Doc();
       ytext = ydoc.getText('shared');
+      
+      // Re-setup update handler
+      ydoc.on('update', (update, origin) => {
+        if (origin !== 'remote' && ws && ws.readyState === WebSocket.OPEN) {
+          const updateBase64 = btoa(String.fromCharCode(...new Uint8Array(update)));
+          ws.send(JSON.stringify({
+            type: 'update',
+            room: room,
+            clientId: clientId,
+            update: updateBase64
+          }));
+          log('Sent update to server');
+        }
+      });
+      
       ytext.observe(() => {
         if (!suppressInput) {
           textarea.value = ytext.toString();
@@ -345,6 +384,7 @@
 
     // Initial connection
     connect();
+    } // End of initApp function
   </script>
 </body>
 </html>

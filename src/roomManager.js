@@ -81,7 +81,7 @@ class RoomManager {
     try {
       const state = Y.encodeStateAsUpdate(room.doc);
       const key = `room:${roomId}:state`;
-      await this.redis.set(key, state.toString("base64"));
+      await this.redis.set(key, Buffer.from(state).toString("base64"));
     } catch (error) {
       console.error(`[RoomManager] Error persisting room: ${error.message}`);
     }
