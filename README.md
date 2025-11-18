@@ -271,8 +271,7 @@ For production deployment, consider:
 
 ## License
 
-MIT
+Raj Kumar Pandey
 
 ## Author
-
-Backend + Infrastructure Engineer Candidate for VideoSDK
+Raj Kumar Pandey
